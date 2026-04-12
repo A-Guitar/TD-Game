@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+#devZone{
+    position: fixed;
+    bottom: 0;
+    right: 0;
+    width: 40px;
+    height: 40px;
+    background: transparent;
+    z-index: 9999;
+}
+body { text-align:center; font-family:sans-serif; }
+canvas { border:1px solid black; background:#eee; }
+button { margin:5px; padding:8px; }
+</style>
+</head>
+<body>
+
+<div>
+Matter: <span id="matter"></span> (Production: <span id="matterProd"></span>) |
+Energy: <span id="energy"></span> (Production: <span id="energyProd"></span>)
+</div>
+
+<canvas id="game" width="800" height="400"></canvas>
+<div id="devZone"></div>
+
+<div>
+<button onclick="selectTower('Basic')">Shooter (150)</button>
+<button onclick="selectTower('Matter')">Matter (200)</button>
+<button onclick="selectTower('Energy')">Energy (200)</button>
+<button onclick="selectTower('Barricade')">Barricade (100)</button>
+</div>
+
+<div>
+<button onclick="restartGame()">Restart</button>
+<button onclick="togglePause()">Pause</button>
+<button onclick="toggleSpeed()">Speed</button>
+</div>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const CELL = 18;
+const COLS = canvas.width / CELL;
+const ROWS = canvas.height / CELL;
+
+let matter, energy, baseHp, time, wave;
+let towers, enemies, beams;
+let paused, selected, speed, gameOver;
+
+let displayMatter, displayEnergy;
+
+let kills, fastKills, normalKills, tankKills, bossKills;
+
+let isDragging, lastPlaced;
+let spawnTimer = 0;
+let devMode = false;
+let noBaseDeath = false;
+let infiniteMatter = false;
+let infiniteEnergy = false;
+    
+const base = { x:0, y:Math.floor(ROWS/2)-2, size:4 };
+
+// RESET
+function restartGame(){
+    matter = 500;
+    energy = 100;
+    baseHp = 1000;
+    time = 0;
+    wave = 1;
+
+    displayMatter = matter;
+    displayEnergy = energy;
+
+    towers = [];
+    enemies = [];
+    beams = [];
+
+    kills = 0;
+    fastKills = 0;
+    normalKills = 0;
+    tankKills = 0;
+    bossKills = 0;
+
+    paused = false;
+    selected = "Basic";
+    speed = 1;
+    gameOver = false;
+
+    isDragging = false;
+    lastPlaced = null;
+
+    spawnTimer = 0;
+}
+restartGame();
+
+// COLOR (black → red → pink → white)
+function getEnemyColor(){
+    let t = Math.min(1, wave / 100);
+
+    // 0 → black, 0.33 → red, 0.66 → pink, 1 → white
+
+    let r, g, b;
+
+    if(t < 0.33){
+        let k = t / 0.33;
+        r = 255 * k;
+        g = 0;
+        b = 0;
+    }
+    else if(t < 0.66){
+        let k = (t - 0.33) / 0.33;
+        r = 255;
+        g = 80 * k;
+        b = 120 * k; // pink formation
+    }
+    else{
+        let k = (t - 0.66) / 0.34;
+        r = 255;
+        g = 80 + (175 * k);
+        b = 120 + (135 * k); // transitions to white
+    }
+
+    return `rgb(${Math.floor(r)},${Math.floor(g)},${Math.floor(b)})`;
+}
+
+// TOWER
+class Tower{
+    constructor(type,x,y){
+        this.type=type;
+        this.x=x;
+        this.y=y;
+        this.size = (type==="Basic") ? 1 : 2;
+
+        this.maxHp = (type==="Basic") ? 200 : 150;
+        this.hp = 0;
+        this.active = false;
+
+        this.buildRate = 0.6;
+        this.cost = (type==="Basic") ? 150 : 200;
+        this.remainingCost = this.cost;
+
+        if(type==="Basic"){
+            this.range = 110;
+            this.cooldown = 0;
+        if(type==="Barricade"){
+    this.size = 1;
+    this.maxHp = 1200;
+    this.hp = this.maxHp;
+    this.active = true;
+
+    this.cost = 100;
+}
+        }
+    }
+
+    act(){
+        if(!this.active){
+            if(this.remainingCost > 0 && matter > 0){
+                let used = Math.min(this.buildRate, this.remainingCost, matter);
+                matter -= used;
+                this.remainingCost -= used;
+
+                this.hp += (used / this.cost) * this.maxHp;
+                if(this.hp > this.maxHp) this.hp = this.maxHp;
+            }
+
+            if(this.hp >= this.maxHp - 0.5){
+                this.hp = this.maxHp;
+                this.remainingCost = 0;
+                this.active = true;
+            }
+            return;
+        }
+
+        if(this.type==="Matter") matter += 0.25;
+        if(this.type==="Energy") energy += 0.25;
+
+        if(this.type==="Basic"){
+            if(this.cooldown>0) this.cooldown--;
+
+            let tx = this.x*CELL + CELL/2;
+            let ty = this.y*CELL + CELL/2;
+
+            enemies.forEach(e=>{
+    let targetX = e.x + e.size / 2;
+    let targetY = e.y + e.size / 2;
+
+    let dist = Math.hypot(targetX - tx, targetY - ty);
+
+    if(dist < this.range && this.cooldown <= 0 && energy >= 5){
+        energy -= 5;
+        this.cooldown = 6;
+        e.hp -= 60;
+
+        beams.push({
+            x1: tx,
+            y1: ty,
+            x2: targetX,
+            y2: targetY,
+            life: 3
+        });
+    }
+});
+        }
+    }
+}
+
+// ENEMY + BOSSES
+class Enemy{
+    constructor(type){
+        this.type = type;
+        this.scale = 1 + wave * 0.08;
+
+        let speedScale = 1 + wave * 0.003;
+
+        if(type==="boss"){
+            this.hp = 15000 * this.scale;
+            this.maxHp = this.hp;
+            this.speed = 0.6 * speedScale;
+            this.size = 80;
+            this.damage = 4 * this.scale;
+            this.isBoss = true;
+            this.weakOffset = this.size / 2;
+
+            this.y = (Math.random()<0.5) ? 5 : canvas.height-85;
+        } else {
+            this.isBoss = false;
+
+            if(type==="fast"){ this.hp=50*this.scale; this.speed=1.6*speedScale; this.size=4; this.damage=0.15*this.scale; }
+            else if(type==="normal"){ this.hp=100*this.scale; this.speed=0.9*speedScale; this.size=8; this.damage=0.4*this.scale; }
+            else{ this.hp=250*this.scale; this.speed=0.5*speedScale; this.size=14; this.damage=1*this.scale; }
+
+            this.y = Math.random()*canvas.height;
+        }
+
+        this.x = canvas.width;
+    }
+
+    move(){
+        if(this.isBoss){
+            this.x -= this.speed;
+
+            towers.forEach(t=>{
+                let ts=t.size*CELL;
+                if(this.x < t.x*CELL + ts &&
+                   this.x + this.size > t.x*CELL &&
+                   this.y < t.y*CELL + ts &&
+                   this.y + this.size > t.y*CELL){
+                    t.hp -= this.damage;
+                }
+            });
+            return;
+        }
+
+        let tx = base.x*CELL + base.size*CELL/2;
+        let ty = base.y*CELL + base.size*CELL/2;
+
+        let angle = Math.atan2(ty-this.y, tx-this.x);
+        let nx = this.x + Math.cos(angle)*this.speed;
+        let ny = this.y + Math.sin(angle)*this.speed;
+
+        let collided = false;
+
+        for(let t of towers){
+            let ts=t.size*CELL;
+            if(nx < t.x*CELL + ts &&
+               nx + this.size > t.x*CELL &&
+               ny < t.y*CELL + ts &&
+               ny + this.size > t.y*CELL){
+                t.hp -= this.damage;
+                collided = true;
+                break;
+            }
+        }
+
+        let bs=base.size*CELL;
+        if(nx < base.x*CELL + bs &&
+           nx + this.size > base.x*CELL &&
+           ny < base.y*CELL + bs &&
+           ny + this.size > base.y*CELL){
+            baseHp = Math.max(0, baseHp - this.damage);
+            collided = true;
+        }
+
+        if(!collided){
+            this.x=nx;
+            this.y=ny;
+        }
+    }
+}
+
+// WAVES
+function spawnWave(){
+    if(wave % 20 === 0){
+        enemies.push(new Enemy("boss"));
+        enemies.push(new Enemy("boss"));
+    }
+    else if(wave % 10 === 0){
+        enemies.push(new Enemy("boss"));
+    }
+
+    let count = 6 + wave*2;
+
+    for(let i=0;i<count;i++){
+        setTimeout(()=>{
+            if(paused || gameOver) return;
+
+            let r=Math.random();
+            if(r<0.3) enemies.push(new Enemy("fast"));
+            else if(r<0.7) enemies.push(new Enemy("normal"));
+            else enemies.push(new Enemy("tank"));
+        },i*150);
+    }
+
+    wave++;
+}
+
+function setWave(newWave){
+    wave = newWave;
+
+    // reset spawn so it doesn't instantly spam old timing
+    spawnTimer = 0;
+
+    // normalize scaling effects immediately
+    // (forces color + stats to match new wave instantly)
+}
+    
+// DRAW
+function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    displayMatter += (matter - displayMatter)*0.2;
+    displayEnergy += (energy - displayEnergy)*0.2;
+
+    ctx.strokeStyle="#ccc";
+    for(let i=0;i<COLS;i++){
+        for(let j=0;j<ROWS;j++){
+            ctx.strokeRect(i*CELL,j*CELL,CELL,CELL);
+        }
+    }
+
+    
+    towers.forEach(t=>{
+    let ts = t.size * CELL;
+
+    if(t.type==="Basic"){
+        ctx.strokeStyle="rgba(0,0,255,0.2)";
+        ctx.beginPath();
+        ctx.arc(t.x*CELL+ts/2,t.y*CELL+ts/2,t.range,0,Math.PI*2);
+        ctx.stroke();
+    }
+});
+
+let bs=base.size*CELL;
+    ctx.fillStyle="darkred";
+    ctx.fillRect(base.x*CELL,base.y*CELL,bs,bs);
+
+    ctx.fillStyle="green";
+    ctx.fillRect(base.x*CELL, base.y*CELL+bs-5, bs*(baseHp/1000), 5);
+
+    ctx.fillStyle="white";
+    ctx.fillText(Math.floor(baseHp), base.x*CELL+5, base.y*CELL+bs-8);
+
+    
+    towers.forEach(t=>{
+    let ts = t.size * CELL;
+
+    if(t.type==="Basic") ctx.fillStyle="#66aaff";
+    if(t.type==="Matter") ctx.fillStyle="orange";
+    if(t.type==="Energy") ctx.fillStyle="yellow";
+
+    ctx.fillRect(t.x*CELL,t.y*CELL,ts,ts);
+
+    ctx.fillStyle="green";
+    ctx.fillRect(t.x*CELL, t.y*CELL+ts-3, ts*(t.hp/t.maxHp), 3);
+
+    // HP number text (THIS WAS MISSING BEFORE)
+    ctx.fillStyle="black";
+    ctx.font="8px Arial";
+    ctx.fillText(Math.floor(t.hp), t.x*CELL+1, t.y*CELL+ts-5);
+});
+
+    enemies.forEach(e=>{
+        ctx.fillStyle = e.isBoss ? "purple" : getEnemyColor();
+        ctx.fillRect(e.x,e.y,e.size,e.size);
+
+        // boss health bar
+        if(e.isBoss){
+            ctx.fillStyle="green";
+            ctx.fillRect(e.x, e.y + e.size - 5, e.size * (e.hp / e.maxHp), 5);
+        }
+    });
+
+    beams.forEach(b=>{
+        ctx.strokeStyle="cyan";
+        ctx.beginPath();
+        ctx.moveTo(b.x1,b.y1);
+        ctx.lineTo(b.x2,b.y2);
+        ctx.stroke();
+        b.life--;
+    });
+    beams = beams.filter(b=>b.life>0);
+
+    ctx.fillStyle="rgba(255,255,255,0.5)";
+    ctx.fillRect(5,5,200,90);
+
+    ctx.fillStyle="black";
+    ctx.font="14px Arial";
+    ctx.fillText("Total Kills: "+kills,10,20);
+
+    ctx.font="12px Arial";
+    ctx.fillText("Fast: "+fastKills,10,40);
+    ctx.fillText("Normal: "+normalKills,10,55);
+    ctx.fillText("Tank: "+tankKills,10,70);
+    ctx.fillText("Boss: "+bossKills,10,85);
+
+    ctx.fillText("Time: "+Math.floor(time/60),110,40);
+    ctx.fillText("Wave: "+wave,110,55);
+
+    document.getElementById("matter").innerText=Math.floor(displayMatter);
+    document.getElementById("energy").innerText=Math.floor(displayEnergy);
+
+    let matterProd = towers.filter(t=>t.type==="Matter").length*0.25;
+    let energyProd = towers.filter(t=>t.type==="Energy").length*0.25;
+
+    document.getElementById("matterProd").innerText = matterProd.toFixed(2);
+    document.getElementById("energyProd").innerText = energyProd.toFixed(2);
+}
+
+// LOOP
+function loop(){
+    if(!paused && !gameOver){
+        for(let i=0;i<speed;i++){
+            time++;
+
+            spawnTimer++;
+            if(spawnTimer > 540){
+                spawnWave();
+                spawnTimer = 0;
+            }
+
+if(infiniteMatter) matter = 999999;
+if(infiniteEnergy) energy = 999999;
+
+            towers.forEach(t=>t.act());
+            enemies.forEach(e=>e.move());
+
+            enemies = enemies.filter(e=>{
+                if(e.hp<=0){
+                    kills++;
+                    if(e.isBoss) bossKills++;
+                    else if(e.type==="fast") fastKills++;
+                    else if(e.type==="normal") normalKills++;
+                    else tankKills++;
+                    return false;
+                }
+                return true;
+            });
+
+            towers = towers.filter(t=>t.hp>0);
+
+            if(baseHp <= 0 && !noBaseDeath){
+                gameOver = true;
+                paused = true;
+            }
+        }
+    }
+
+    draw();
+    requestAnimationFrame(loop);
+}
+
+function toggleSpeed(){
+    if(speed===1) speed=2;
+    else if(speed===2) speed=4;
+    else speed=1;
+}
+
+function togglePause(){ if(!gameOver) paused=!paused; }
+function selectTower(t){ selected=t; }
+
+function createDevMenu(){
+    if(document.getElementById("devMenu")) return;
+
+    let menu = document.createElement("div");
+    menu.id = "devMenu";
+
+    menu.style.position = "fixed";
+    menu.style.bottom = "10px";
+    menu.style.left = "10px";
+    menu.style.width = "auto";
+    menu.style.background = "transparent";
+    menu.style.padding = "5px";
+    menu.style.zIndex = "1000";
+
+    function makeButton(text, onClick){
+        let b = document.createElement("button");
+        b.innerText = text;
+        b.style.marginRight = "6px";
+        b.style.padding = "3px 5px";
+        b.style.fontSize = "11px";
+        b.onclick = onClick;
+        menu.appendChild(b);
+        return b;
+    }
+
+    let baseBtn = makeButton("Base Death: ON", ()=>{
+        noBaseDeath = !noBaseDeath;
+        baseBtn.innerText = noBaseDeath ? "Base Death: OFF" : "Base Death: ON";
+    });
+
+    makeButton("Infinite Matter", ()=>{
+    infiniteMatter = !infiniteMatter;
+});
+
+makeButton("Infinite Energy", ()=>{
+    infiniteEnergy = !infiniteEnergy;
+});
+
+    makeButton("Spawn Boss", ()=>{
+        enemies.push(new Enemy("boss"));
+    });
+
+ makeButton("10x Speed", ()=>{
+    speed = (speed === 10) ? 1 : 10;
+});
+
+makeButton("Skip +10 Waves", ()=>{
+    setWave(wave + 10);
+});
+    
+    document.body.appendChild(menu);
+}
+    
+// placement
+function placeTower(x,y){
+    let size = (selected==="Basic")?1:2;
+
+    let bs = base.size;
+    if(x < base.x + bs &&
+       x + size > base.x &&
+       y < base.y + bs &&
+       y + size > base.y) return;
+
+    for(let t of towers){
+    if(x < t.x+t.size && x+size > t.x &&
+       y < t.y+t.size && y+size > t.y){
+
+        if(t.type === selected){
+            t.upgrade();
+        }
+
+        return;
+    }
+}
+
+    if(lastPlaced && lastPlaced.x===x && lastPlaced.y===y) return;
+
+    towers.push(new Tower(selected,x,y));
+    lastPlaced = {x,y};
+}
+
+canvas.addEventListener("click", e=>{
+    let rect = canvas.getBoundingClientRect();
+    let x = Math.floor((e.clientX - rect.left)/CELL);
+    let y = Math.floor((e.clientY - rect.top)/CELL);
+    placeTower(x,y);
+});
+
+canvas.addEventListener("mousedown", ()=>{ isDragging=true; lastPlaced=null; });
+canvas.addEventListener("mouseup", ()=>{ isDragging=false; lastPlaced=null; });
+
+canvas.addEventListener("mousemove", e=>{
+    if(!isDragging) return;
+    let rect = canvas.getBoundingClientRect();
+    let x = Math.floor((e.clientX - rect.left)/CELL);
+    let y = Math.floor((e.clientY - rect.top)/CELL);
+    placeTower(x,y);
+});
+
+window.addEventListener("load", ()=>{
+    const devInput = document.getElementById("devInput");
+
+    devInput.addEventListener("keydown", e=>{
+        if(e.key === "Enter"){
+            let val = devInput.value.trim();
+
+            if(val === "devtools"){
+                devMode = true;
+                createDevMenu();
+            }
+
+            devInput.value = "";
+        }
+    });
+});
+document.getElementById("devZone").addEventListener("click", ()=>{
+    let input = document.createElement("input");
+
+    input.placeholder = "";
+    input.style.position = "fixed";
+    input.style.bottom = "10px";
+    input.style.right = "10px";
+    input.style.fontSize = "12px";
+    input.style.width = "100px";
+    input.style.zIndex = "10000";
+
+    document.body.appendChild(input);
+
+    input.addEventListener("keydown", (e)=>{
+        if(e.key === "Enter"){
+            if(input.value.toLowerCase() === "devtools"){
+                createDevMenu();
+            }
+            input.remove();
+        }
+    });
+});
+loop();
+</script>
+</body>
+</html>
