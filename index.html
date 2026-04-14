@@ -18,25 +18,42 @@ button { margin:5px; padding:8px; }
 </head>
 <body>
 
-<div>
-Matter: <span id="matter"></span> (Production: <span id="matterProd"></span>) |
-Energy: <span id="energy"></span> (Production: <span id="energyProd"></span>)
-</div>
+<!-- MENU (VISIBLE FIRST) -->
+<div id="menuScreen" style="
+    width:100%;
+    height:100vh;
+    overflow-x:auto;
+    overflow-y:hidden;
+    white-space:nowrap;
+    background:#111;
+"></div>
 
-<canvas id="game" width="800" height="400"></canvas>
-<div id="devZone"></div>
+<!-- GAME (HIDDEN AT START) -->
+<div id="gameUI" style="display:none;">
 
-<div>
-<button onclick="selectTower('Basic')">Shooter (150)</button>
-<button onclick="selectTower('Matter')">Matter (200)</button>
-<button onclick="selectTower('Energy')">Energy (200)</button>
-<button onclick="selectTower('Barricade')">Barricade (100)</button>
-</div>
+    <div>
+    Matter: <span id="matter"></span> (Production: <span id="matterProd"></span>) |
+    Energy: <span id="energy"></span> (Production: <span id="energyProd"></span>)
+    </div>
 
-<div>
-<button onclick="restartGame()">Restart</button>
-<button onclick="togglePause()">Pause</button>
-<button onclick="toggleSpeed()">Speed</button>
+    <canvas id="game" width="800" height="400"></canvas>
+
+    <div id="devZone"></div>
+
+    <div>
+    <button onclick="selectTower('Basic')">Shooter (150)</button>
+    <button onclick="selectTower('Matter')">Matter (200)</button>
+    <button onclick="selectTower('Energy')">Energy (200)</button>
+    <button onclick="selectTower('Barricade')">Barricade (100)</button>
+    </div>
+
+    <div>
+    <button onclick="restartGame()">Restart</button>
+    <button onclick="togglePause()">Pause</button>
+    <button onclick="toggleSpeed()">Speed</button>
+    <button onclick="backToMenu()">Menu</button> 
+    </div>
+
 </div>
 
 <script>
@@ -55,6 +72,7 @@ let displayMatter, displayEnergy;
 
 let kills, fastKills, normalKills, tankKills, bossKills;
 
+let spawnTimeouts = [];
 let isDragging, lastPlaced;
 let spawnTimer = 0;
 let devMode = false;
@@ -64,8 +82,76 @@ let infiniteEnergy = false;
     
 const base = { x:0, y:Math.floor(ROWS/2)-2, size:4 };
 
+function createMenu(){
+    let menu = document.getElementById("menuScreen");
+
+    function makeCard(title, mode){
+        let card = document.createElement("div");
+
+        card.style.display = "inline-block";
+        card.style.width = "200px";
+        card.style.height = "300px";
+        card.style.margin = "20px";
+        card.style.background = "#222";
+        card.style.color = "white";
+        card.style.borderRadius = "10px";
+        card.style.cursor = "pointer";
+        card.style.verticalAlign = "top";
+        card.style.textAlign = "center";
+        card.style.paddingTop = "20px";
+
+        // TITLE
+        let text = document.createElement("div");
+        text.innerText = title;
+        text.style.fontSize = "18px";
+        text.style.marginBottom = "10px";
+
+        // PREVIEW BOX (simple for now)
+        let preview = document.createElement("div");
+        preview.style.width = "160px";
+        preview.style.height = "200px";
+        preview.style.margin = "auto";
+        preview.style.background = "#444";
+
+        card.appendChild(text);
+        card.appendChild(preview);
+
+        card.onclick = ()=>{
+            startGame(mode);
+        };
+
+        menu.appendChild(card);
+    }
+
+    makeCard("Classic Mode", "classic");
+    makeCard("Endless Mode", "endless");
+}
+
+function startGame(mode){
+    document.getElementById("menuScreen").style.display = "none";
+    document.getElementById("gameUI").style.display = "block";
+
+    restartGame();
+
+    // store mode
+    currentMode = mode;
+}
+
+function backToMenu(){
+    // show menu
+    document.getElementById("menuScreen").style.display = "block";
+
+    // hide game
+    document.getElementById("gameUI").style.display = "none";
+
+    // reset game state (important)
+    restartGame();
+}    
+    
 // RESET
 function restartGame(){
+    spawnTimeouts.forEach(t => clearTimeout(t));
+    spawnTimeouts = [];
     matter = 500;
     energy = 100;
     baseHp = 1000;
@@ -99,7 +185,7 @@ restartGame();
 
 // COLOR (black → red → pink → white)
 function getEnemyColor(){
-    let t = Math.min(1, wave / 100);
+    let t = Math.min(1, wave / 150);
 
     // 0 → black, 0.33 → red, 0.66 → pink, 1 → white
 
@@ -130,33 +216,47 @@ function getEnemyColor(){
 // TOWER
 class Tower{
     constructor(type,x,y){
-        this.type=type;
-        this.x=x;
-        this.y=y;
-        this.size = (type==="Basic") ? 1 : 2;
+    this.type = type;
+    this.x = x;
+    this.y = y;
 
-        this.maxHp = (type==="Basic") ? 200 : 150;
-        this.hp = 0;
-        this.active = false;
+    // DEFAULT SAFE VALUES (VERY IMPORTANT)
+    this.size = 2;
+    this.maxHp = 100;
+    this.hp = 0;
+    this.active = false;
+    this.buildRate = 0.6;
+    this.cost = 200;
+    this.remainingCost = this.cost;
 
-        this.buildRate = 0.6;
-        this.cost = (type==="Basic") ? 150 : 200;
-        this.remainingCost = this.cost;
-
-        if(type==="Basic"){
-            this.range = 110;
-            this.cooldown = 0;
-        if(type==="Barricade"){
-    this.size = 1;
-    this.maxHp = 1200;
-    this.hp = this.maxHp;
-    this.active = true;
-
-    this.cost = 100;
-}
-        }
+    // TYPE OVERRIDES
+    if(type === "Basic"){
+        this.size = 1;
+        this.range = 110;
+        this.cooldown = 0;
+        this.cost = 150;
+        this.maxHp = 200;
     }
 
+    if(type === "Matter"){
+        this.size = 2;
+        this.cost = 200;
+    }
+
+    if(type === "Energy"){
+        this.size = 2;
+        this.cost = 200;
+    }
+
+    if(type === "Barricade"){
+    this.size = 1;
+    this.maxHp = 1200;
+    this.hp = 0;              // start at 0 like others
+    this.active = false;      // must build
+    this.cost = 100;
+    this.remainingCost = this.cost;
+}
+}
     act(){
         if(!this.active){
             if(this.remainingCost > 0 && matter > 0){
@@ -242,19 +342,46 @@ class Enemy{
 
     move(){
         if(this.isBoss){
-            this.x -= this.speed;
 
-            towers.forEach(t=>{
-                let ts=t.size*CELL;
-                if(this.x < t.x*CELL + ts &&
-                   this.x + this.size > t.x*CELL &&
-                   this.y < t.y*CELL + ts &&
-                   this.y + this.size > t.y*CELL){
-                    t.hp -= this.damage;
-                }
-            });
-            return;
+    let nx = this.x - this.speed;
+    let ny = this.y;
+
+    let collided = false;
+
+    for(let t of towers){
+        let ts = t.size * CELL;
+
+        if(nx < t.x*CELL + ts &&
+           nx + this.size > t.x*CELL &&
+           ny < t.y*CELL + ts &&
+           ny + this.size > t.y*CELL){
+
+            t.hp -= this.damage;
+            collided = true;
+            break;
         }
+    }
+
+    // also check base
+    let bs = base.size * CELL;
+
+    if(nx < base.x*CELL + bs &&
+       nx + this.size > base.x*CELL &&
+       ny < base.y*CELL + bs &&
+       ny + this.size > base.y*CELL){
+
+        baseHp = Math.max(0, baseHp - this.damage);
+        collided = true;
+    }
+
+    // ONLY move if not colliding
+    if(!collided){
+        this.x = nx;
+        this.y = ny;
+    }
+
+    return;
+}
 
         let tx = base.x*CELL + base.size*CELL/2;
         let ty = base.y*CELL + base.size*CELL/2;
@@ -306,7 +433,7 @@ function spawnWave(){
     let count = 6 + wave*2;
 
     for(let i=0;i<count;i++){
-        setTimeout(()=>{
+        let timeout = setTimeout(()=>{
             if(paused || gameOver) return;
 
             let r=Math.random();
@@ -314,6 +441,7 @@ function spawnWave(){
             else if(r<0.7) enemies.push(new Enemy("normal"));
             else enemies.push(new Enemy("tank"));
         },i*150);
+spawnTimeouts.push(timeout);
     }
 
     wave++;
@@ -372,11 +500,13 @@ let bs=base.size*CELL;
     if(t.type==="Basic") ctx.fillStyle="#66aaff";
     if(t.type==="Matter") ctx.fillStyle="orange";
     if(t.type==="Energy") ctx.fillStyle="yellow";
+    if(t.type==="Barricade") ctx.fillStyle="rgb(180,180,180)";
 
     ctx.fillRect(t.x*CELL,t.y*CELL,ts,ts);
 
     ctx.fillStyle="green";
     ctx.fillRect(t.x*CELL, t.y*CELL+ts-3, ts*(t.hp/t.maxHp), 3);
+   
 
     // HP number text (THIS WAS MISSING BEFORE)
     ctx.fillStyle="black";
@@ -538,23 +668,22 @@ makeButton("Skip +10 Waves", ()=>{
     
 // placement
 function placeTower(x,y){
-    let size = (selected==="Basic")?1:2;
+    let size = (selected==="Basic" || selected==="Barricade") ? 1 : 2;
 
     let bs = base.size;
     if(x < base.x + bs &&
        x + size > base.x &&
        y < base.y + bs &&
-       y + size > base.y) return;
+       y + size > base.y){
+        return;
+    }
 
     for(let t of towers){
-    if(x < t.x+t.size && x+size > t.x &&
-       y < t.y+t.size && y+size > t.y){
-
-        if(t.type === selected){
-            t.upgrade();
-        }
-
-        return;
+        if(x < t.x + t.size &&
+           x + size > t.x &&
+           y < t.y + t.size &&
+           y + size > t.y){
+            return;
     }
 }
 
@@ -582,22 +711,6 @@ canvas.addEventListener("mousemove", e=>{
     placeTower(x,y);
 });
 
-window.addEventListener("load", ()=>{
-    const devInput = document.getElementById("devInput");
-
-    devInput.addEventListener("keydown", e=>{
-        if(e.key === "Enter"){
-            let val = devInput.value.trim();
-
-            if(val === "devtools"){
-                devMode = true;
-                createDevMenu();
-            }
-
-            devInput.value = "";
-        }
-    });
-});
 document.getElementById("devZone").addEventListener("click", ()=>{
     let input = document.createElement("input");
 
@@ -620,6 +733,10 @@ document.getElementById("devZone").addEventListener("click", ()=>{
         }
     });
 });
+
+let currentMode = "classic";
+createMenu();
+    
 loop();
 </script>
 </body>
