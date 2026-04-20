@@ -2,18 +2,44 @@
 <html>
 <head>
 <style>
-#devZone{
+#otherInputs{
     position: fixed;
     bottom: 0;
     right: 0;
-    width: 40px;
+    width: 100px;
     height: 40px;
     background: transparent;
-    z-index: 9999;
+    z-index: 10000;
 }
 body { text-align:center; font-family:sans-serif; }
 canvas { border:1px solid black; background:#eee; }
 button { margin:5px; padding:8px; }
+
+.plansContainer{
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+}
+
+.column {
+    display: flex;
+    flex-direction: column;
+    width: max-content;
+    max-width: 600px;
+}
+
+.subColumn {
+    display: flex;
+    flex-direction: column;
+    max-width: 120px;
+}
+
+.subRow {
+    display: flex;
+    gap: 15px;
+    width: max-content;
+    flex-wrap: wrap;
+}
 </style>
 </head>
 <body>
@@ -38,13 +64,14 @@ button { margin:5px; padding:8px; }
 
     <canvas id="game" width="800" height="400"></canvas>
 
-    <div id="devZone"></div>
+    <div id="otherInputs"></div>
 
     <div>
     <button onclick="selectTower('Basic')">Shooter (150)</button>
     <button onclick="selectTower('Matter')">Matter (200)</button>
     <button onclick="selectTower('Energy')">Energy (200)</button>
     <button onclick="selectTower('Barricade')">Barricade (100)</button>
+     <button onclick="selectTower('Slow')">Slow (180)</button>
     </div>
 
     <div>
@@ -79,6 +106,8 @@ let devMode = false;
 let noBaseDeath = false;
 let infiniteMatter = false;
 let infiniteEnergy = false;
+
+let plansMenu = null;
     
 const base = { x:0, y:Math.floor(ROWS/2)-2, size:4 };
 
@@ -124,7 +153,6 @@ function createMenu(){
     }
 
     makeCard("Classic Mode", "classic");
-    makeCard("Endless Mode", "endless");
 }
 
 function startGame(mode){
@@ -249,12 +277,18 @@ class Tower{
     }
 
     if(type === "Barricade"){
-    this.size = 1;
-    this.maxHp = 1200;
-    this.hp = 0;              // start at 0 like others
-    this.active = false;      // must build
-    this.cost = 100;
-    this.remainingCost = this.cost;
+        this.size = 1;
+        this.maxHp = 1200;
+        this.hp = 0;              // start at 0 like others
+        this.active = false;      // must build
+        this.cost = 100;
+        this.remainingCost = this.cost;
+    }
+    if(type === "Slow"){
+        this.size = 1;
+        this.range = 80;
+        this.cost = 180;
+        this.slowFactor = 0.5; // 50% speed
 }
 }
     act(){
@@ -276,12 +310,40 @@ class Tower{
             return;
         }
 
+        if(this.type === "Slow"){
+
+    let tx = this.x * CELL + CELL/2;
+    let ty = this.y * CELL + CELL/2;
+
+    enemies.forEach(e => {
+
+        let ex = e.x + e.size/2;
+        let ey = e.y + e.size/2;
+
+        let dist = Math.hypot(ex - tx, ey - ty);
+
+        if(dist < this.range){
+
+            // VISUAL TEST: tint enemy slightly blue
+            e._slowed = true;
+
+            if(e.speedMultiplier === undefined){
+                e.speedMultiplier = 1;
+            }
+
+            e.speedMultiplier = Math.min(e.speedMultiplier, this.slowFactor);
+        }
+    });
+
+    return;
+}
+
         if(this.type==="Matter") matter += 0.25;
         if(this.type==="Energy") energy += 0.25;
 
         if(this.type==="Basic"){
             if(this.cooldown>0) this.cooldown--;
-
+    
             let tx = this.x*CELL + CELL/2;
             let ty = this.y*CELL + CELL/2;
 
@@ -341,9 +403,12 @@ class Enemy{
     }
 
     move(){
+        this.speedMultiplier = this.speedMultiplier || 1;
         if(this.isBoss){
 
-    let nx = this.x - this.speed;
+    let slow = this.speedMultiplier;
+
+let nx = this.x - (this.speed * slow);
     let ny = this.y;
 
     let collided = false;
@@ -387,8 +452,10 @@ class Enemy{
         let ty = base.y*CELL + base.size*CELL/2;
 
         let angle = Math.atan2(ty-this.y, tx-this.x);
-        let nx = this.x + Math.cos(angle)*this.speed;
-        let ny = this.y + Math.sin(angle)*this.speed;
+        let slow = this.speedMultiplier;
+
+let nx = this.x + Math.cos(angle) * this.speed * slow;
+let ny = this.y + Math.sin(angle) * this.speed * slow;
 
         let collided = false;
 
@@ -475,6 +542,19 @@ function draw(){
     towers.forEach(t=>{
     let ts = t.size * CELL;
 
+    if(t.type === "Slow"){
+    ctx.strokeStyle = "rgba(100,200,255,0.35)";
+    ctx.beginPath();
+    ctx.arc(
+        t.x * CELL + (t.size * CELL)/2,
+        t.y * CELL + (t.size * CELL)/2,
+        t.range,
+        0,
+        Math.PI * 2
+    );
+    ctx.stroke();
+}
+        
     if(t.type==="Basic"){
         ctx.strokeStyle="rgba(0,0,255,0.2)";
         ctx.beginPath();
@@ -501,6 +581,7 @@ let bs=base.size*CELL;
     if(t.type==="Matter") ctx.fillStyle="orange";
     if(t.type==="Energy") ctx.fillStyle="yellow";
     if(t.type==="Barricade") ctx.fillStyle="rgb(180,180,180)";
+    if(t.type==="Slow") ctx.fillStyle="white";
 
     ctx.fillRect(t.x*CELL,t.y*CELL,ts,ts);
 
@@ -515,14 +596,28 @@ let bs=base.size*CELL;
 });
 
     enemies.forEach(e=>{
+    if(e._slowed){
+        ctx.fillStyle = "deepskyblue"; // slow = obvious color
+        e._slowed = false; // reset each frame
+    }
+    else{
         ctx.fillStyle = e.isBoss ? "purple" : getEnemyColor();
+    }
         ctx.fillRect(e.x,e.y,e.size,e.size);
 
         // boss health bar
         if(e.isBoss){
-            ctx.fillStyle="green";
-            ctx.fillRect(e.x, e.y + e.size - 5, e.size * (e.hp / e.maxHp), 5);
-        }
+    ctx.fillStyle="green";
+    ctx.fillRect(e.x, e.y + e.size - 5, e.size * (e.hp / e.maxHp), 5);
+
+    ctx.fillStyle="white";
+    ctx.font="12px Arial";
+    ctx.fillText(
+        Math.floor(e.hp),
+        e.x + 2,
+        e.y +e.size - 8
+    );
+}
     });
 
     beams.forEach(b=>{
@@ -710,29 +805,129 @@ canvas.addEventListener("mousemove", e=>{
     let y = Math.floor((e.clientY - rect.top)/CELL);
     placeTower(x,y);
 });
+    
+let otherInputBox = null;
 
-document.getElementById("devZone").addEventListener("click", ()=>{
-    let input = document.createElement("input");
+document.getElementById("otherInputs").addEventListener("click", ()=>{
 
-    input.placeholder = "";
-    input.style.position = "fixed";
-    input.style.bottom = "10px";
-    input.style.right = "10px";
-    input.style.fontSize = "12px";
-    input.style.width = "100px";
-    input.style.zIndex = "10000";
+    // if already created → just show it
+    if(otherInputBox){
+        otherInputBox.style.display = "block";
+        otherInputBox.focus();
+        return;
+    }
 
-    document.body.appendChild(input);
+    // create it once
+    otherInputBox = document.createElement("input");
 
-    input.addEventListener("keydown", (e)=>{
-        if(e.key === "Enter"){
-            if(input.value.toLowerCase() === "devtools"){
-                createDevMenu();
-            }
-            input.remove();
+    otherInputBox.placeholder = "";
+    otherInputBox.style.position = "fixed";
+    otherInputBox.style.bottom = "0px";
+    otherInputBox.style.right = "0px";
+    otherInputBox.style.fontSize = "12px";
+    otherInputBox.style.width = "100px";
+    otherInputBox.style.height = "15px";
+    otherInputBox.style.zIndex = "10000";
+
+    document.body.appendChild(otherInputBox);
+
+    otherInputBox.addEventListener("keydown", (e)=>{
+    if(e.key === "Enter"){
+        let val = otherInputBox.value.toLowerCase();
+
+        if(val === "devtools"){
+            createDevMenu();
         }
-    });
+
+        if(val === "gameplans"){
+            showGamePlans();
+        }
+
+        otherInputBox.value = "";
+    }
 });
+});
+
+function showGamePlans(){
+
+    if(!plansMenu){
+        plansMenu = document.createElement("div");
+
+        plansMenu.style.position = "fixed";
+        plansMenu.style.top = "50%";
+        plansMenu.style.left = "50%";
+        plansMenu.style.transform = "translate(-50%, -50%)";
+        plansMenu.style.fontSize = "10pt";
+        plansMenu.style.width = "auto";
+        plansMenu.style.height = "auto";
+        plansMenu.style.background = "#222";
+        plansMenu.style.color = "white";
+        plansMenu.style.padding = "8px";
+        plansMenu.style.zIndex = "10001";
+        plansMenu.style.overflowY = "auto";
+        plansMenu.style.border = "2px solid white";
+
+        plansMenu.innerHTML = `
+         <h2>Future Improvments</h3>
+        <div class="plansContainer">
+           
+            
+            <div class="column">
+            <h3>Towers</h5>
+            <p>- Add slow tower -- In Progress</p>
+            <p>- Add bomb tower</p>
+            <p>- Add booster tower</p>
+            <p>- Add spawner tower</p>
+            <p>- Add repeller tower</p>
+            </div>
+
+            <div class="column">
+            <h3>Enemy Abilities</h3>
+
+    <div class="subRow">
+        <div class="subColumn">
+            <p>Normal</p>
+            <p>- Shielded</p>
+            <p>- Duplicator</p>
+            <p>- Slow-resistant</p>
+        </div>
+            
+        <div class="subColumn">
+            <p>Medium</p>
+            <p>- Laser-proof</p>
+            <p>- Wall-breaker</p>
+            <p>- Anti-spawner</p>
+        </div>
+            
+        <div class="subColumn">
+            <p>Hard</p>
+            <p>-Infectious - damage spreads to other nearby towers</p>
+            <p>-Grouping/Absorbing - gathers other nearby enemies to it to become stronger, color changes with strength to purple</p>
+            <p>-Summoner - doesn't try to attack, but stays in the back and makes new enemies appear around it</p>
+        </div>
+    </div>
+       
+</div>
+
+            <div class="column">
+            <h3>Game Modes</h3>
+            <p>- Classic (normal, get to wave 150 to unlock other modes)</p>
+            <p>- Infinite (side-scroller where your towers are constantly being destroyed)</p>
+            <p>- Leveling (towers cost more and use more but are able to level up)</p>
+            <p>- Boss Battle (more bosses spawn and boss kings - bosses that come up the middle lane)</p>
+            </div>
+            
+        </div>
+        `;
+
+        document.body.appendChild(plansMenu);
+    } else {
+        plansMenu.style.display = "block";
+    }
+    plansMenu.onclick = () => {
+    plansMenu.style.display = "none";
+};
+}
 
 let currentMode = "classic";
 createMenu();
